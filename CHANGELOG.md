@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- **Live communication graph**: agents as nodes, glowing animated lines while they
+  talk — question fanning out to every seat, members reading each other's anonymized
+  answers, everything converging into the chairman. Served from inside omp
+  (`Bun.serve` + SSE), auto-opens in your browser when a council convenes.
+- `/council live` opens the graph on demand; `liveGraph: false` disables auto-open.
+
 ## 0.3.0
 
 - **Deliberation dashboard**: every run writes a self-contained `council-<ts>.html`

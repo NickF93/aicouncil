@@ -79,7 +79,16 @@ latest with:
 ```
 
 While the council deliberates, a live status widget in omp shows each seat thinking,
-answering, reviewing, and the chair synthesizing.
+answering, reviewing, and the chair synthesizing — and a **live communication graph**
+auto-opens in your browser: every agent is a node, and glowing lines animate while
+they talk (question → seats, seats reading each other's anonymized answers, everything
+converging into the chairman). Open it any time with:
+
+```
+/council live
+```
+
+Set `liveGraph: false` in config to turn the auto-open off.
 
 ## Config
 

@@ -3,7 +3,7 @@
  * mocked provider layer, then run the full 3-stage pipeline.
  */
 import { describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z as realZod } from "zod";
@@ -61,6 +61,7 @@ function makeHarness() {
 	const pi = {
 		zod: { z: realZod },
 		setLabel: () => {},
+		on: () => {},
 		registerCommand: (name: string, options: any) => commands.set(name, options),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		sendMessage: (msg: any) => sent.push(msg),
@@ -71,6 +72,9 @@ function makeHarness() {
 	// Sandbox the user-level config into the temp dir so roster-mutation tests
 	// never touch the real HOME (the extension honors PI_CODING_AGENT_DIR).
 	process.env.PI_CODING_AGENT_DIR = join(cwd, ".omp", "agent");
+	// Keep the live-graph server out of unit tests.
+	mkdirSync(join(cwd, ".omp"), { recursive: true });
+	writeFileSync(join(cwd, ".omp", "council.json"), JSON.stringify({ liveGraph: false }));
 	const ctx = {
 		cwd,
 		hasUI: false,
@@ -198,11 +202,9 @@ describe("council extension", () => {
 	test("fuzzy resolution: 'anthropic/opus' finds claude-opus-5 (not -thinking)", async () => {
 		const h = makeHarness();
 		// project config with fuzzy specs
-		const { mkdirSync, writeFileSync } = await import("node:fs");
-		mkdirSync(join(h.cwd, ".omp"), { recursive: true });
 		writeFileSync(
 			join(h.cwd, ".omp", "council.json"),
-			JSON.stringify({ members: [{ model: "anthropic/opus" }, { model: "codex" }], chairman: "anthropic/opus" }),
+			JSON.stringify({ members: [{ model: "anthropic/opus" }, { model: "codex" }], chairman: "anthropic/opus", liveGraph: false }),
 		);
 		factory(h.pi as any);
 		await h.commands.get("council")!.handler("roster", h.ctx);
@@ -259,6 +261,17 @@ describe("council extension", () => {
 		await h.commands.get("council")!.handler("quick check", h.ctx);
 		const chairCalls = callLog.filter(c => c.system.includes("chairman"));
 		expect(chairCalls[0]!.model).toBe("google-antigravity/gemini-3-pro");
+	});
+
+	test("live graph page is self-contained and demo-capable", async () => {
+		const { liveGraphPageHtml } = await import("../index.ts");
+		const page = liveGraphPageHtml();
+		expect(page).toContain("EventSource");
+		expect(page).toContain("aicouncil live");
+		expect(page).toContain("@keyframes march");
+		const demo = liveGraphPageHtml([[0, { type: "run_start", question: "q", seats: [], chair: { nick: "X", color: "#fff" } }]]);
+		expect(demo).toContain("window.__DEMO__=");
+		expect(demo).not.toContain("undefined");
 	});
 
 	test("degrades gracefully when a member fails auth", async () => {

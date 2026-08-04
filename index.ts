@@ -13,6 +13,8 @@
  *   /council <question>            convene the council
  *   /council models                list model IDs you are authenticated for
  *   /council roster                show the resolved seats + chairman
+ *   /council live                  open the live agent-communication graph
+ *   /council last                  open the latest deliberation dashboard
  *   /council add <model> [nick]    seat a new member (persisted to council.json)
  *   /council remove <nick|model>   unseat a member
  *   /council chair <model> [nick]  set the chairman
@@ -71,6 +73,8 @@ interface CouncilConfig {
 	writeTranscript: boolean;
 	/** Also expose the council as a tool the main agent can call. */
 	exposeTool: boolean;
+	/** Serve a live communication graph (glowing agent-to-agent lines) and open it when a run starts. */
+	liveGraph: boolean;
 }
 
 /**
@@ -101,6 +105,7 @@ const DEFAULT_CONFIG: CouncilConfig = {
 	contextCharBudget: 24_000,
 	writeTranscript: true,
 	exposeTool: true,
+	liveGraph: true,
 };
 
 function loadConfig(cwd: string): CouncilConfig {
@@ -624,6 +629,226 @@ export function renderDashboardHtml(rec: DeliberationRecord): string {
 }
 
 // ---------------------------------------------------------------------------
+// Live communication graph — agents as nodes, glowing lines while they talk.
+// Served from inside omp (Bun.serve) with SSE; auto-opens on run start.
+// ---------------------------------------------------------------------------
+
+export function liveGraphPageHtml(demoEvents?: [number, Record<string, unknown>][]): string {
+	const demo = demoEvents ? `<script>window.__DEMO__=${JSON.stringify(demoEvents)};</script>` : "";
+	return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>aicouncil — live</title>
+<style>
+  body{margin:0;background:#0d0d0d;color:#fff;font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+  header{display:flex;gap:8px;padding:14px 18px 6px;align-items:center;flex-wrap:wrap}
+  h1{font-size:15px;margin:0 14px 0 0}
+  .chipS{border:1px solid #2c2c2a;border-radius:999px;padding:3px 12px;color:#898781;font-size:12px;transition:all .3s}
+  .chipS.on{color:#fff;border-color:#3987e5;box-shadow:0 0 14px rgba(57,135,229,.4)}
+  #q{padding:2px 18px 0;color:#c3c2b7;font-size:13px;max-width:920px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #wrap{display:flex;justify-content:center}
+  svg{display:block}
+  .lane{fill:none;stroke:#1f1f1e;stroke-width:1}
+  .flow{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-dasharray:5 14;animation:march .7s linear infinite;filter:drop-shadow(0 0 7px currentColor)}
+  @keyframes march{to{stroke-dashoffset:-19}}
+  .node circle{fill:#1a1a19;stroke-width:3;transition:filter .3s}
+  .node.active circle{animation:pulse 1.1s ease-in-out infinite}
+  @keyframes pulse{0%,100%{filter:drop-shadow(0 0 4px currentColor)}50%{filter:drop-shadow(0 0 16px currentColor)}}
+  .node text{fill:#c3c2b7;font-size:12px;text-anchor:middle}
+  .node .glyph{font-size:13px;fill:#fff;text-anchor:middle;dominant-baseline:central}
+  .node .sub{fill:#898781;font-size:10px}
+  #log{position:fixed;left:0;right:0;bottom:0;padding:12px 18px;font:12px ui-monospace,monospace;color:#898781}
+  #log div:first-child{color:#c3c2b7}
+  #banner{position:fixed;top:64px;right:18px;background:#1a1a19;border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:12px 16px;font-size:13px;display:none;max-width:280px}
+  #banner b{color:#0ca30c}
+</style>${demo}</head><body>
+<header><h1>🏛️ aicouncil live</h1>
+  <span class="chipS" id="c1">1 · Opinions</span><span class="chipS" id="c2">2 · Anonymized review</span><span class="chipS" id="c3">3 · Synthesis</span>
+  <span class="chipS" id="clock"></span></header>
+<div id="q">waiting for a council to convene… run /council &lt;question&gt; in omp</div>
+<div id="wrap"><svg id="g" width="980" height="540" viewBox="0 0 980 540"></svg></div>
+<div id="banner"></div><div id="log"></div>
+<script>
+(function(){
+  var NS="http://www.w3.org/2000/svg";
+  var S={seats:[],chair:null,hub:{x:390,y:270,nick:"Q",color:"#898781"},flows:{},stage:0,t0:0,done:false};
+  var svg=document.getElementById("g");
+  function el(n,a){var e=document.createElementNS(NS,n);for(var k in a)e.setAttribute(k,a[k]);return e}
+  function layout(){
+    var cx=390,cy=270,R=190;
+    for(var i=0;i<S.seats.length;i++){
+      var ang=-Math.PI/2+i*2*Math.PI/S.seats.length;
+      S.seats[i].x=cx+R*Math.cos(ang);S.seats[i].y=cy+R*Math.sin(ang);
+    }
+    if(S.chair){S.chair.x=840;S.chair.y=270}
+  }
+  function curve(a,b){
+    var mx=(a.x+b.x)/2,my=(a.y+b.y)/2,dx=b.x-a.x,dy=b.y-a.y,l=Math.sqrt(dx*dx+dy*dy)||1;
+    var off=Math.min(46,l/5),px=-dy/l*off,py=dx/l*off;
+    return "M"+a.x+" "+a.y+" Q "+(mx+px)+" "+(my+py)+" "+b.x+" "+b.y;
+  }
+  function nodeOf(nick){if(nick==="Q")return S.hub;if(nick==="\\u2696")return S.chair;
+    for(var i=0;i<S.seats.length;i++)if(S.seats[i].nick===nick)return S.seats[i];
+    if(S.chair&&S.chair.nick===nick)return S.chair;return null}
+  function render(){
+    svg.innerHTML="";
+    var i,s;
+    for(i=0;i<S.seats.length;i++){s=S.seats[i];
+      svg.appendChild(el("path",{class:"lane",d:curve(S.hub,s)}));
+      if(S.chair)svg.appendChild(el("path",{class:"lane",d:curve(s,S.chair)}));
+    }
+    for(var id in S.flows){var f=S.flows[id];var a=nodeOf(f.from),b=nodeOf(f.to);if(!a||!b)continue;
+      var p=el("path",{class:"flow",d:curve(a,b),stroke:f.color});p.style.color=f.color;svg.appendChild(p);
+    }
+    drawNode(S.hub,"#898781","Q","",false,18);
+    for(i=0;i<S.seats.length;i++){s=S.seats[i];drawNode(s,s.color,s.nick,s.glyph||"",!!s.active,22)}
+    if(S.chair)drawNode(S.chair,S.chair.color,S.chair.nick+" ⚖",S.chair.glyph||"",!!S.chair.active,26);
+  }
+  function drawNode(n,color,label,glyph,active,r){
+    var g=el("g",{class:"node"+(active?" active":"")});g.style.color=color;
+    var c=el("circle",{cx:n.x,cy:n.y,r:r,stroke:color});g.appendChild(c);
+    var t1=el("text",{class:"glyph",x:n.x,y:n.y});t1.textContent=glyph;g.appendChild(t1);
+    var t2=el("text",{x:n.x,y:n.y+r+16});t2.textContent=label;g.appendChild(t2);
+    if(n.sub){var t3=el("text",{class:"sub",x:n.x,y:n.y+r+30});t3.textContent=n.sub;g.appendChild(t3)}
+    svg.appendChild(g);
+  }
+  var logEl=document.getElementById("log"),logs=[];
+  function log(m){logs.unshift(m);logs=logs.slice(0,5);logEl.innerHTML="";
+    for(var i=0;i<logs.length;i++){var d=document.createElement("div");d.textContent=logs[i];logEl.appendChild(d)}}
+  function stageChips(){for(var i=1;i<=3;i++)document.getElementById("c"+i).className="chipS"+(S.stage===i?" on":"")}
+  setInterval(function(){if(S.t0&&!S.done)document.getElementById("clock").textContent=((Date.now()-S.t0)/1000).toFixed(0)+"s"},500);
+  function onEvent(ev){
+    var n;
+    switch(ev.type){
+      case "run_start":
+        S.seats=ev.seats.map(function(x){return{nick:x.nick,color:x.color}});
+        S.chair={nick:ev.chair.nick,color:ev.chair.color};S.stage=1;S.flows={};S.done=false;S.t0=Date.now();
+        document.getElementById("q").textContent="Q: "+ev.question;
+        document.getElementById("banner").style.display="none";
+        layout();log("council convened — "+S.seats.length+" seats, chaired by "+ev.chair.nick);break;
+      case "op_start":n=nodeOf(ev.seat);if(!n)break;n.active=true;
+        S.flows["q-"+ev.seat]={from:"Q",to:ev.seat,color:n.color};log(ev.seat+" is forming an opinion…");break;
+      case "op_end":n=nodeOf(ev.seat);if(!n)break;n.active=false;n.glyph=ev.ok?"✓":"✗";n.sub=ev.ms?(ev.ms/1000).toFixed(1)+"s":"";
+        delete S.flows["q-"+ev.seat];log(ev.seat+(ev.ok?" answered ("+(ev.ms/1000).toFixed(1)+"s)":" failed"));break;
+      case "review_start":S.stage=2;n=nodeOf(ev.seat);if(!n)break;n.active=true;
+        for(var i=0;i<S.seats.length;i++){var o=S.seats[i];if(o.nick!==ev.seat&&o.glyph==="✓")
+          S.flows["r-"+ev.seat+"-"+o.nick]={from:o.nick,to:ev.seat,color:o.color}}
+        log(ev.seat+" is reading the anonymized answers…");break;
+      case "review_end":n=nodeOf(ev.seat);if(!n)break;n.active=false;
+        for(var id in S.flows)if(id.indexOf("r-"+ev.seat+"-")===0)delete S.flows[id];
+        log(ev.seat+(ev.ok?" submitted rankings":" review failed"));break;
+      case "synth_start":S.stage=3;if(S.chair)S.chair.active=true;
+        for(var j=0;j<S.seats.length;j++){var sj=S.seats[j];if(sj.glyph==="✓")
+          S.flows["s-"+sj.nick]={from:sj.nick,to:"\\u2696",color:sj.color}}
+        log(S.chair.nick+" is synthesizing the verdict…");break;
+      case "synth_end":if(S.chair){S.chair.active=false;S.chair.glyph=ev.ok?"✓":"✗"}
+        for(var id2 in S.flows)if(id2.indexOf("s-")===0)delete S.flows[id2];
+        log(ev.ok?"verdict ready":"synthesis failed");break;
+      case "done":S.done=true;
+        var b=document.getElementById("banner");b.style.display="block";
+        b.innerHTML="<b>✓ deliberation complete</b> · "+(ev.durationMs/1000).toFixed(0)+"s"+
+          (ev.ranking&&ev.ranking.length?"<br>peer ranking: "+ev.ranking.join(" › "):"");
+        log("done in "+(ev.durationMs/1000).toFixed(0)+"s — see the dashboard for the full record");break;
+    }
+    stageChips();render();
+  }
+  render();stageChips();
+  if(window.__DEMO__){for(var i=0;i<window.__DEMO__.length;i++)(function(p){setTimeout(function(){onEvent(p[1])},p[0])})(window.__DEMO__[i])}
+  else{var es=new EventSource("/events");es.onmessage=function(m){try{onEvent(JSON.parse(m.data))}catch(e){}}}
+})();
+</script></body></html>`;
+}
+
+interface LiveServerHandle {
+	port: number;
+	push: (ev: Record<string, unknown>) => void;
+	stop: () => void;
+}
+
+let liveServer: LiveServerHandle | undefined;
+let liveHistory: Record<string, unknown>[] = [];
+let liveOpened = false;
+
+/** Start (or reuse) the SSE server on a random localhost port. Returns undefined off-Bun. */
+function ensureLiveServer(): LiveServerHandle | undefined {
+	if (liveServer) return liveServer;
+	const BunRt = (globalThis as { Bun?: { serve?: (opts: unknown) => { port: number; stop: (force?: boolean) => void } } }).Bun;
+	if (!BunRt?.serve) return undefined;
+	const encoder = new TextEncoder();
+	const clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
+	try {
+		const server = BunRt.serve({
+			port: 0,
+			fetch: (req: Request) => {
+				const path = new URL(req.url).pathname;
+				if (path === "/") {
+					return new Response(liveGraphPageHtml(), { headers: { "content-type": "text/html; charset=utf-8" } });
+				}
+				if (path === "/events") {
+					let ctrl: ReadableStreamDefaultController<Uint8Array> | undefined;
+					const stream = new ReadableStream<Uint8Array>({
+						start(c) {
+							ctrl = c;
+							clients.add(c);
+							for (const ev of liveHistory) c.enqueue(encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
+						},
+						cancel() {
+							if (ctrl) clients.delete(ctrl);
+						},
+					});
+					return new Response(stream, {
+						headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+					});
+				}
+				return new Response("not found", { status: 404 });
+			},
+		});
+		liveServer = {
+			port: server.port,
+			push: ev => {
+				liveHistory = ev.type === "run_start" ? [ev] : [...liveHistory, ev];
+				const data = encoder.encode(`data: ${JSON.stringify(ev)}\n\n`);
+				for (const c of [...clients]) {
+					try {
+						c.enqueue(data);
+					} catch {
+						clients.delete(c);
+					}
+				}
+			},
+			stop: () => {
+				try {
+					server.stop(true);
+				} catch {
+					// already down
+				}
+				liveServer = undefined;
+			},
+		};
+		return liveServer;
+	} catch {
+		return undefined;
+	}
+}
+
+function livePush(ev: Record<string, unknown>): void {
+	liveServer?.push(ev);
+}
+
+/** Open a file or URL in the default browser/app, best-effort. */
+async function openExternal(pi: ExtensionAPI | undefined, target: string): Promise<boolean> {
+	if (!pi) return false;
+	const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+	try {
+		await pi.exec(opener, [target]);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+let piRef: ExtensionAPI | undefined;
+
+// ---------------------------------------------------------------------------
 // The council run
 // ---------------------------------------------------------------------------
 
@@ -685,13 +910,35 @@ async function runCouncil(
 		[shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
 	}
 
+	// Live graph: start/reuse the SSE server and announce the run.
+	if (config.liveGraph) {
+		const srv = ensureLiveServer();
+		if (srv) {
+			const chairIdx = shuffled.findIndex(
+				s => s.model && `${s.model.provider}/${s.model.id}` === `${chairman.model!.provider}/${chairman.model!.id}`,
+			);
+			livePush({
+				type: "run_start",
+				question: question.slice(0, 160),
+				seats: shuffled.map((s, i) => ({ nick: s.nick, color: SEAT_COLORS_DARK[i % 8] })),
+				chair: { nick: chairman.nick, color: chairIdx >= 0 ? SEAT_COLORS_DARK[chairIdx % 8] : "#9085e9" },
+			});
+			if (!liveOpened) {
+				liveOpened = true;
+				void openExternal(piRef, `http://localhost:${srv.port}/`);
+			}
+		}
+	}
+
 	// -- Stage 1: opinions ----------------------------------------------------
 	onProgress?.(`council: ${shuffled.length} members deliberating…`);
 	const opinions = await Promise.all(
 		shuffled.map(seat => {
 			setStage(seat.nick, "⏳ forming opinion…");
+			livePush({ type: "op_start", seat: seat.nick });
 			return callModel(ctx, seat, opinionSystemPrompt(seat.nick, shuffled.length), qBlock, config.maxTokensOpinion, config.timeoutMs, signal).then(res => {
 				setStage(seat.nick, res.error ? `✗ ${res.error.slice(0, 40)}` : `✓ answered ${fmtMs(res.elapsedMs)}`);
+				livePush({ type: "op_end", seat: seat.nick, ok: !res.error, ms: res.elapsedMs });
 				return res;
 			});
 		}),
@@ -720,8 +967,10 @@ async function runCouncil(
 	const reviewResults = await Promise.all(
 		answered.map(a => {
 			setStage(a.seat.nick, "⏳ reviewing peers…");
+			livePush({ type: "review_start", seat: a.seat.nick });
 			return callModel(ctx, a.seat, reviewSystemPrompt(a.seat.nick, answered.length), reviewInput, config.maxTokensReview, config.timeoutMs, signal).then(res => {
 				setStage(a.seat.nick, res.error ? `✓ answered · ✗ review failed` : `✓ answered · ✓ reviewed ${fmtMs(res.elapsedMs)}`);
+				livePush({ type: "review_end", seat: a.seat.nick, ok: !res.error, ms: res.elapsedMs });
 				return res;
 			});
 		}),
@@ -743,6 +992,7 @@ async function runCouncil(
 	// -- Stage 3: chairman synthesis ------------------------------------------
 	onProgress?.(`council: ${chairman.nick} synthesizing…`);
 	setStage(`⚖ ${chairman.nick}`, "⏳ synthesizing verdict…");
+	livePush({ type: "synth_start" });
 	const reviewsBlock =
 		reviews.length > 0
 			? reviews.map((r, i) => `### Review by member ${i + 1}\n\n${r.text}`).join("\n\n---\n\n")
@@ -759,6 +1009,7 @@ async function runCouncil(
 	);
 
 	setStage(`⚖ ${chairman.nick}`, synthesis.error ? "✗ synthesis failed" : `✓ verdict ${fmtMs(synthesis.elapsedMs)}`);
+	livePush({ type: "synth_end", ok: !synthesis.error, ms: synthesis.elapsedMs });
 
 	// -- Deliberation record (feeds the HTML dashboard) ------------------------
 	const seatRecords: SeatRecord[] = shuffled.map((seat, i) => {
@@ -805,6 +1056,12 @@ async function runCouncil(
 			contextIncluded: Boolean(sessionContext),
 		},
 	};
+
+	livePush({
+		type: "done",
+		durationMs: record.durationMs,
+		ranking: leaderboard?.map(e => e.seat.nick) ?? [],
+	});
 
 	// -- Transcript + dashboard ------------------------------------------------
 	let transcriptPath: string | undefined;
@@ -897,6 +1154,10 @@ async function runCouncil(
 export default function (pi: ExtensionAPI) {
 	pi.setLabel("Council");
 	const { z } = pi.zod;
+	piRef = pi;
+	pi.on("session_shutdown", () => {
+		liveServer?.stop();
+	});
 
 	const listModels = (ctx: ExtensionContext): string => {
 		const models = ctx.models.list();
@@ -947,6 +1208,7 @@ export default function (pi: ExtensionAPI) {
 				{ value: "models", label: "models", description: "List authenticated model IDs" },
 				{ value: "roster", label: "roster", description: "Show resolved council seats" },
 				{ value: "last", label: "last", description: "Open the latest deliberation dashboard" },
+				{ value: "live", label: "live", description: "Open the live agent-communication graph" },
 				{ value: "add ", label: "add", description: "add <model> [nick] — seat a new member" },
 				{ value: "remove ", label: "remove", description: "remove <nick|model> — unseat a member" },
 				{ value: "chair ", label: "chair", description: "chair <model> [nick] — set the chairman" },
@@ -975,13 +1237,21 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 				const fullPath = join(dir, latest);
-				const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
-				try {
-					await pi.exec(opener, [fullPath]);
-					ctx.ui.notify(`Opened ${latest}`, "info");
-				} catch {
-					pi.sendMessage({ customType: "council-info", content: `Latest council dashboard: ${fullPath}` });
+				if (await openExternal(pi, fullPath)) ctx.ui.notify(`Opened ${latest}`, "info");
+				else pi.sendMessage({ customType: "council-info", content: `Latest council dashboard: ${fullPath}` });
+				return;
+			}
+
+			if (trimmed === "live") {
+				const srv = ensureLiveServer();
+				if (!srv) {
+					ctx.ui.notify("Live graph unavailable (Bun.serve not found in this runtime)", "error");
+					return;
 				}
+				const url = `http://localhost:${srv.port}/`;
+				liveOpened = true;
+				if (await openExternal(pi, url)) ctx.ui.notify(`Live council graph: ${url}`, "info");
+				else pi.sendMessage({ customType: "council-info", content: `Live council graph: ${url}` });
 				return;
 			}
 
