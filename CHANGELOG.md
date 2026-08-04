@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.3
+
+- `/council update` — checks npm for the latest version; self-updates via
+  `omp install` for plugin installs, prints instructions for manual installs.
+
 ## 0.4.2
 
 - `/council list` — aligned table of every seat: position (member / chair),

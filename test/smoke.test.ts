@@ -322,13 +322,33 @@ describe("council extension", () => {
 		expect(existsSync(join(h.cwd, ".omp", "council", "last-run.json"))).toBe(true);
 	});
 
+	test("/council update: up to date and newer-version paths", async () => {
+		const h = makeHarness();
+		factory(h.pi as any);
+		const realFetch = globalThis.fetch;
+		try {
+			// up to date
+			globalThis.fetch = (async () => ({ json: async () => ({ version: "0.4.3" }) })) as any;
+			await h.commands.get("council")!.handler("update", h.ctx);
+			expect(h.notifications.some(n => n.includes("up to date"))).toBe(true);
+			// newer version, manual install (test file path has no /plugins/) → instructions
+			globalThis.fetch = (async () => ({ json: async () => ({ version: "9.9.9" }) })) as any;
+			await h.commands.get("council")!.handler("update", h.ctx);
+			const msg = h.sent.filter(m => m.customType === "council-info").pop();
+			expect(msg.content).toContain("9.9.9");
+			expect(msg.content).toContain("omp install @codeninza/aicouncil");
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+	});
+
 	test("/council doctor reports capabilities", async () => {
 		const h = makeHarness();
 		factory(h.pi as any);
 		await h.commands.get("council")!.handler("doctor", h.ctx);
 		const msg = h.sent.find(m => m.customType === "council-info");
 		expect(msg.content).toContain("auth surface");
-		expect(msg.content).toContain("aicouncil 0.4.1");
+		expect(msg.content).toContain("aicouncil 0.4.3");
 	});
 
 	test("degrades gracefully when a member fails auth", async () => {

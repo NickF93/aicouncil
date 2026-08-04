@@ -138,7 +138,7 @@ function loadConfig(cwd: string): CouncilConfig {
 
 let configLoadError: string | undefined;
 
-const VERSION = "0.4.2";
+const VERSION = "0.4.3";
 
 // ---------------------------------------------------------------------------
 // Roster mutation (/council add | remove | chair) — persisted to council.json
@@ -1279,6 +1279,7 @@ export default function (pi: ExtensionAPI) {
 				{ value: "last", label: "last", description: "Open the latest deliberation dashboard" },
 				{ value: "live", label: "live", description: "Open the live agent-communication graph" },
 				{ value: "doctor", label: "doctor", description: "Runtime compatibility report" },
+				{ value: "update", label: "update", description: "Check npm for a newer aicouncil and install it" },
 				{ value: "help", label: "help", description: "List council commands" },
 				{ value: "add ", label: "add", description: "add <model> [nick] — seat a new member" },
 				{ value: "remove ", label: "remove", description: "remove <nick|model> — unseat a member" },
@@ -1294,6 +1295,61 @@ export default function (pi: ExtensionAPI) {
 				pi.sendMessage({ customType: "council-info", content: `Models available for council.json:\n\n\`\`\`\n${listModels(ctx)}\n\`\`\`` });
 				return;
 			}
+			if (trimmed === "update") {
+				ctx.ui.setStatus("council", "checking npm for updates…");
+				let latest: string | undefined;
+				try {
+					const res = await fetch("https://registry.npmjs.org/@codeninza/aicouncil/latest", {
+						signal: AbortSignal.timeout(10_000),
+					});
+					latest = ((await res.json()) as { version?: string }).version;
+				} catch (error) {
+					ctx.ui.notify(`Could not reach npm: ${error instanceof Error ? error.message : String(error)}`, "error");
+				} finally {
+					ctx.ui.setStatus("council", undefined);
+				}
+				if (!latest) return;
+				if (latest === VERSION) {
+					ctx.ui.notify(`aicouncil ${VERSION} is up to date`, "info");
+					return;
+				}
+				// Manual folder installs shouldn't be shadowed by a surprise plugin install.
+				const installedAsPlugin = (() => {
+					try {
+						return /[/\\]plugins[/\\]/.test(fileURLToPath(import.meta.url));
+					} catch {
+						return false;
+					}
+				})();
+				if (!installedAsPlugin) {
+					pi.sendMessage({
+						customType: "council-info",
+						content: `aicouncil ${latest} is available (you have ${VERSION}). This copy was installed manually, so update it by replacing the folder — or switch to npm installs with \`omp install @codeninza/aicouncil\`.`,
+					});
+					return;
+				}
+				ctx.ui.setStatus("council", `updating to ${latest}…`);
+				try {
+					const result = await pi.exec("omp", ["install", "@codeninza/aicouncil@latest"]);
+					if (result.code === 0) {
+						pi.sendMessage({
+							customType: "council-info",
+							content: `✓ aicouncil updated ${VERSION} → ${latest}. Restart omp (or /reload) to load the new version.`,
+						});
+					} else {
+						ctx.ui.notify(`Update failed (exit ${result.code}) — run \`omp install @codeninza/aicouncil\` manually`, "error");
+					}
+				} catch {
+					pi.sendMessage({
+						customType: "council-info",
+						content: `aicouncil ${latest} is available (you have ${VERSION}). Update with: \`omp install @codeninza/aicouncil\``,
+					});
+				} finally {
+					ctx.ui.setStatus("council", undefined);
+				}
+				return;
+			}
+
 			if (trimmed === "doctor") {
 				const reg = ctx.modelRegistry as unknown as Record<string, unknown>;
 				const cap = (o: unknown, k: string) => (o && typeof (o as Record<string, unknown>)[k] === "function" ? "✓" : "✗");
@@ -1337,6 +1393,7 @@ export default function (pi: ExtensionAPI) {
 						"/council last                  open the latest dashboard",
 						"/council live                  open the live communication graph",
 						"/council doctor                runtime compatibility report",
+						"/council update                check npm and self-update",
 						"```",
 					].join("\n"),
 				});
