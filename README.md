@@ -19,7 +19,7 @@ instructed to surface disagreements, not paper over them.
 ## Install
 
 ```bash
-omp install aicouncil
+omp install @codeninza/aicouncil
 ```
 
 Or manually: drop this folder into `~/.omp/agent/extensions/`.
