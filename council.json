@@ -1,0 +1,20 @@
+{
+  "members": [
+    { "model": "anthropic/claude-fable-5", "nick": "Fable 5" },
+    { "model": "anthropic/claude-opus-5", "nick": "Opus 5" },
+    { "model": "openai-codex/gpt-5-codex", "nick": "Codex" },
+    { "model": "google-antigravity/gemini-3-pro", "nick": "Gemini" }
+  ],
+  "chairman": "anthropic/claude-opus-5",
+  "chairmanNick": "Opus 5",
+  "chairmanEffort": "high",
+  "effort": "medium",
+  "maxTokensOpinion": 3000,
+  "maxTokensReview": 1500,
+  "maxTokensSynthesis": 4000,
+  "timeoutMs": 240000,
+  "includeSessionContext": true,
+  "contextCharBudget": 24000,
+  "writeTranscript": true,
+  "exposeTool": true
+}

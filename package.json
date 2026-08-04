@@ -1,0 +1,52 @@
+{
+  "name": "aicouncil",
+  "version": "0.1.0",
+  "description": "A council of frontier models for oh-my-pi: independent opinions → anonymized peer review → chairman synthesis, running on your existing subscriptions (Anthropic, Codex, Antigravity — no API keys).",
+  "type": "module",
+  "main": "./index.ts",
+  "license": "MIT",
+  "author": "Koteshwar Rao M <mkraofx@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YOUR-GITHUB-USERNAME/aicouncil.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "omp",
+    "oh-my-pi",
+    "llm-council",
+    "council",
+    "multi-model",
+    "consensus",
+    "ai"
+  ],
+  "files": [
+    "index.ts",
+    "council.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "omp": { "extensions": ["./index.ts"] },
+  "pi": { "extensions": ["./index.ts"] },
+  "scripts": {
+    "test": "bun test",
+    "check": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-ai": "*",
+    "@oh-my-pi/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@oh-my-pi/pi-ai": { "optional": true },
+    "@oh-my-pi/pi-coding-agent": { "optional": true }
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-ai": "*",
+    "@oh-my-pi/pi-coding-agent": "*",
+    "@types/node": "^22",
+    "typescript": "^5.7.0",
+    "zod": "^4"
+  }
+}
