@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1
+
+- **Fix**: auth now capability-detects the registry surface
+  (`getApiKeyAndHeaders` → `getApiKey`+`getProviderHeaders` → `resolver`), fixing
+  "ctx.modelRegistry.getApiKeyAndHeaders is not a function" on omp/pi builds whose
+  extension-facing registry API differs.
+- `/council doctor` — runtime compatibility report (auth surface, models facade,
+  Bun.serve, config paths, roster) for bug reports.
+- `/council help`, and `members` as an alias of `roster`.
+
 ## 0.4.0
 
 - **Live communication graph**: agents as nodes, glowing animated lines while they

@@ -138,6 +138,8 @@ function loadConfig(cwd: string): CouncilConfig {
 
 let configLoadError: string | undefined;
 
+const VERSION = "0.4.1";
+
 // ---------------------------------------------------------------------------
 // Roster mutation (/council add | remove | chair) — persisted to council.json
 // ---------------------------------------------------------------------------
@@ -235,6 +237,51 @@ interface CallResult {
 	elapsedMs: number;
 }
 
+/**
+ * Resolve request auth against whatever surface this omp/pi build exposes.
+ * The extension-facing registry API has drifted across versions
+ * (getApiKeyAndHeaders → getApiKey/getProviderHeaders → resolver), so we
+ * capability-detect instead of assuming one method exists.
+ */
+type ResolvedAuth = { ok: true; apiKey: unknown; headers?: Record<string, string> } | { ok: false; error: string };
+
+async function resolveAuth(ctx: ExtensionContext, model: Model): Promise<ResolvedAuth> {
+	const reg = ctx.modelRegistry as unknown as {
+		getApiKeyAndHeaders?: (m: Model) => Promise<{ ok: boolean; apiKey?: string; headers?: Record<string, string>; error?: string }>;
+		getApiKey?: (m: Model, sessionId?: string) => Promise<string | undefined>;
+		getProviderHeaders?: (provider: string) => Record<string, string> | undefined;
+		resolver?: (m: Model, sessionId?: string) => unknown;
+	};
+	const headers = (() => {
+		try {
+			return typeof reg?.getProviderHeaders === "function" ? reg.getProviderHeaders(model.provider) : undefined;
+		} catch {
+			return undefined;
+		}
+	})();
+	try {
+		if (typeof reg?.getApiKeyAndHeaders === "function") {
+			const auth = await reg.getApiKeyAndHeaders(model);
+			if (auth?.ok && auth.apiKey) return { ok: true, apiKey: auth.apiKey, headers: auth.headers ?? headers };
+			return { ok: false, error: auth?.error ?? `no credentials for ${model.provider} — try /login ${model.provider}` };
+		}
+		if (typeof reg?.getApiKey === "function") {
+			const key = await reg.getApiKey(model);
+			if (key) return { ok: true, apiKey: key, headers };
+			return { ok: false, error: `no credentials for ${model.provider} — try /login ${model.provider}` };
+		}
+		if (typeof reg?.resolver === "function") {
+			return { ok: true, apiKey: reg.resolver(model), headers };
+		}
+		return {
+			ok: false,
+			error: "this omp/pi build exposes no known auth API on ctx.modelRegistry — run /council doctor and report the output at github.com/mynenikoteshwarrao/aicouncil/issues",
+		};
+	} catch (error) {
+		return { ok: false, error: error instanceof Error ? error.message : String(error) };
+	}
+}
+
 /** One tool-less side-call. Never throws — errors come back in `.error`. */
 async function callModel(
 	ctx: ExtensionContext,
@@ -249,7 +296,7 @@ async function callModel(
 	const model = seat.model;
 	if (!model) return { text: "", error: `model "${seat.spec}" not resolved`, elapsedMs: 0 };
 
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+	const auth = await resolveAuth(ctx, model);
 	if (!auth.ok) return { text: "", error: auth.error, elapsedMs: Date.now() - started };
 
 	const controller = new AbortController();
@@ -264,7 +311,8 @@ async function callModel(
 			model,
 			{ systemPrompt: [systemPrompt], messages: [message], tools: [] },
 			{
-				apiKey: auth.apiKey,
+				// string or ApiKeyResolver depending on which registry surface answered
+				apiKey: auth.apiKey as string,
 				headers: auth.headers,
 				signal: controller.signal,
 				maxTokens,
@@ -1209,6 +1257,8 @@ export default function (pi: ExtensionAPI) {
 				{ value: "roster", label: "roster", description: "Show resolved council seats" },
 				{ value: "last", label: "last", description: "Open the latest deliberation dashboard" },
 				{ value: "live", label: "live", description: "Open the live agent-communication graph" },
+				{ value: "doctor", label: "doctor", description: "Runtime compatibility report" },
+				{ value: "help", label: "help", description: "List council commands" },
 				{ value: "add ", label: "add", description: "add <model> [nick] — seat a new member" },
 				{ value: "remove ", label: "remove", description: "remove <nick|model> — unseat a member" },
 				{ value: "chair ", label: "chair", description: "chair <model> [nick] — set the chairman" },
@@ -1223,7 +1273,55 @@ export default function (pi: ExtensionAPI) {
 				pi.sendMessage({ customType: "council-info", content: `Models available for council.json:\n\n\`\`\`\n${listModels(ctx)}\n\`\`\`` });
 				return;
 			}
-			if (trimmed === "roster" || trimmed === "config") {
+			if (trimmed === "doctor") {
+				const reg = ctx.modelRegistry as unknown as Record<string, unknown>;
+				const cap = (o: unknown, k: string) => (o && typeof (o as Record<string, unknown>)[k] === "function" ? "✓" : "✗");
+				const BunRt = (globalThis as { Bun?: { serve?: unknown; version?: string } }).Bun;
+				const modelCount = (() => {
+					try {
+						return String(ctx.models.list().length);
+					} catch {
+						return "?";
+					}
+				})();
+				const report = [
+					`aicouncil ${VERSION}`,
+					`runtime: bun ${BunRt?.version ?? "unknown"} · ${process.platform}`,
+					`auth surface on ctx.modelRegistry:`,
+					`  getApiKeyAndHeaders ${cap(reg, "getApiKeyAndHeaders")}   getApiKey ${cap(reg, "getApiKey")}   getProviderHeaders ${cap(reg, "getProviderHeaders")}   resolver ${cap(reg, "resolver")}`,
+					`models facade: list ${cap(ctx.models, "list")} (${modelCount} authenticated) · resolve ${cap(ctx.models, "resolve")}`,
+					`live graph: Bun.serve ${BunRt?.serve ? "✓" : "✗"}`,
+					`user config: ${existsSync(userConfigPath()) ? userConfigPath() : "(none)"}`,
+					`project config: ${existsSync(join(ctx.cwd, ".omp", "council.json")) ? join(ctx.cwd, ".omp", "council.json") : "(none)"}`,
+					``,
+					rosterText(ctx),
+				].join("\n");
+				pi.sendMessage({ customType: "council-info", content: `Council doctor:\n\n\`\`\`\n${report}\n\`\`\`` });
+				return;
+			}
+
+			if (trimmed === "help") {
+				pi.sendMessage({
+					customType: "council-info",
+					content: [
+						"aicouncil commands:",
+						"```",
+						"/council <question>            convene the council",
+						"/council models                list authenticated model IDs",
+						"/council roster                show resolved seats + chairman",
+						"/council add <model> [nick]    seat a member",
+						"/council remove <nick|model>   unseat a member",
+						"/council chair <model> [nick]  set the chairman",
+						"/council last                  open the latest dashboard",
+						"/council live                  open the live communication graph",
+						"/council doctor                runtime compatibility report",
+						"```",
+					].join("\n"),
+				});
+				return;
+			}
+
+			if (trimmed === "roster" || trimmed === "config" || trimmed === "members") {
 				pi.sendMessage({ customType: "council-info", content: `Council roster:\n\n\`\`\`\n${rosterText(ctx)}\n\`\`\`` });
 				return;
 			}

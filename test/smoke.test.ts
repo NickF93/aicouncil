@@ -274,6 +274,44 @@ describe("council extension", () => {
 		expect(demo).not.toContain("undefined");
 	});
 
+	test("auth fallback: registry with only getApiKey + getProviderHeaders", async () => {
+		const h = makeHarness();
+		(h.ctx as any).modelRegistry = {
+			getApiKey: async () => "legacy-key",
+			getProviderHeaders: () => ({}),
+		};
+		factory(h.pi as any);
+		await h.commands.get("council")!.handler("test question", h.ctx);
+		const verdict = h.sent.find(m => m.customType === "council-verdict");
+		expect(verdict.content).toContain("Council verdict");
+	});
+
+	test("auth fallback: registry with only resolver", async () => {
+		const h = makeHarness();
+		(h.ctx as any).modelRegistry = { resolver: () => async () => "resolved-key" };
+		factory(h.pi as any);
+		await h.commands.get("council")!.handler("test question", h.ctx);
+		const verdict = h.sent.find(m => m.customType === "council-verdict");
+		expect(verdict.content).toContain("Council verdict");
+	});
+
+	test("auth fallback: bare registry reports actionable error", async () => {
+		const h = makeHarness();
+		(h.ctx as any).modelRegistry = {};
+		factory(h.pi as any);
+		await h.commands.get("council")!.handler("test question", h.ctx);
+		expect(h.notifications.some(n => n.includes("no known auth API"))).toBe(true);
+	});
+
+	test("/council doctor reports capabilities", async () => {
+		const h = makeHarness();
+		factory(h.pi as any);
+		await h.commands.get("council")!.handler("doctor", h.ctx);
+		const msg = h.sent.find(m => m.customType === "council-info");
+		expect(msg.content).toContain("auth surface");
+		expect(msg.content).toContain("aicouncil 0.4.1");
+	});
+
 	test("degrades gracefully when a member fails auth", async () => {
 		callLog = [];
 		const h = makeHarness();
