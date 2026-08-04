@@ -51,6 +51,17 @@ fuzzy — `"anthropic/opus"` finds `claude-opus-*` — but exact IDs are safest.
 /council should we use SQLite or Postgres for this service?
 ```
 
+Manage the roster without touching config files:
+
+```
+/council add anthropic/claude-haiku-5 Haiku    # seat a member
+/council remove Codex                          # unseat a member
+/council chair google-antigravity/gemini-3-pro # change the chairman
+/council roster                                # see the result
+```
+
+Changes persist to your `council.json` (project-level config wins if it defines the roster).
+
 By default the council also sees a slice of your current session, so "is this plan
 sound?" works mid-task. The main agent gets a `council` tool too, so plain
 conversation works:

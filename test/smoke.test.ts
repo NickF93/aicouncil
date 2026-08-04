@@ -68,6 +68,9 @@ function makeHarness() {
 	};
 
 	const cwd = mkdtempSync(join(tmpdir(), "council-test-"));
+	// Sandbox the user-level config into the temp dir so roster-mutation tests
+	// never touch the real HOME (the extension honors PI_CODING_AGENT_DIR).
+	process.env.PI_CODING_AGENT_DIR = join(cwd, ".omp", "agent");
 	const ctx = {
 		cwd,
 		hasUI: false,
@@ -189,6 +192,54 @@ describe("council extension", () => {
 		expect(msg.content).not.toContain("claude-opus-5-thinking");
 		expect(msg.content).toContain("openai-codex/gpt-5-codex");
 		expect(msg.content).not.toContain("UNRESOLVED");
+	});
+
+	test("/council add seats a new member and persists to user config", async () => {
+		const h = makeHarness();
+		factory(h.pi as any);
+		await h.commands.get("council")!.handler("add anthropic/claude-opus-5-thinking Thinker", h.ctx);
+		const configPath = join(h.cwd, ".omp", "agent", "council.json");
+		expect(existsSync(configPath)).toBe(true);
+		const saved = JSON.parse(readFileSync(configPath, "utf-8"));
+		expect(saved.members.length).toBe(5);
+		expect(saved.members[4]).toEqual({ model: "anthropic/claude-opus-5-thinking", nick: "Thinker" });
+		const msg = h.sent.find(m => m.customType === "council-info");
+		expect(msg.content).toContain("Thinker");
+	});
+
+	test("/council add rejects unknown models and duplicates", async () => {
+		const h = makeHarness();
+		factory(h.pi as any);
+		await h.commands.get("council")!.handler("add mistral/le-chat", h.ctx);
+		expect(h.notifications.some(n => n.includes("No authenticated model"))).toBe(true);
+		await h.commands.get("council")!.handler("add anthropic/claude-opus-5", h.ctx);
+		expect(h.notifications.some(n => n.includes("already seated"))).toBe(true);
+		expect(existsSync(join(h.cwd, ".omp", "agent", "council.json"))).toBe(false);
+	});
+
+	test("/council remove unseats by nick and persists", async () => {
+		const h = makeHarness();
+		factory(h.pi as any);
+		await h.commands.get("council")!.handler("remove Codex", h.ctx);
+		const saved = JSON.parse(readFileSync(join(h.cwd, ".omp", "agent", "council.json"), "utf-8"));
+		expect(saved.members.length).toBe(3);
+		expect(saved.members.some((m: any) => m.nick === "Codex")).toBe(false);
+		await h.commands.get("council")!.handler("remove nobody-here", h.ctx);
+		expect(h.notifications.some(n => n.includes("No member matches"))).toBe(true);
+	});
+
+	test("/council chair changes the chairman and persists", async () => {
+		const h = makeHarness();
+		factory(h.pi as any);
+		await h.commands.get("council")!.handler("chair google-antigravity/gemini-3-pro", h.ctx);
+		const saved = JSON.parse(readFileSync(join(h.cwd, ".omp", "agent", "council.json"), "utf-8"));
+		expect(saved.chairman).toBe("google-antigravity/gemini-3-pro");
+		expect(saved.chairmanNick).toBe("Gemini");
+		// next run's chairman call goes to gemini
+		callLog = [];
+		await h.commands.get("council")!.handler("quick check", h.ctx);
+		const chairCalls = callLog.filter(c => c.system.includes("chairman"));
+		expect(chairCalls[0]!.model).toBe("google-antigravity/gemini-3-pro");
 	});
 
 	test("degrades gracefully when a member fails auth", async () => {

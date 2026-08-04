@@ -10,9 +10,12 @@
  *   Stage 3  SYNTHESIS  — the chairman reads answers + reviews and writes the final verdict
  *
  * Usage:
- *   /council <question>     convene the council
- *   /council models         list model IDs you are authenticated for (use these in config)
- *   /council roster         show the resolved seats + chairman
+ *   /council <question>            convene the council
+ *   /council models                list model IDs you are authenticated for
+ *   /council roster                show the resolved seats + chairman
+ *   /council add <model> [nick]    seat a new member (persisted to council.json)
+ *   /council remove <nick|model>   unseat a member
+ *   /council chair <model> [nick]  set the chairman
  *
  * The main agent also gets a `council` tool (read-only approval), so you can just
  * say "ask the council whether ..." mid-session.
@@ -24,7 +27,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { completeSimple } from "@oh-my-pi/pi-ai";
 import type { AssistantMessage, Effort, Model, UserMessage } from "@oh-my-pi/pi-ai";
@@ -112,7 +115,7 @@ function loadConfig(cwd: string): CouncilConfig {
 	// Later entries override earlier ones: packaged defaults < user config < project config.
 	const candidates = [
 		here ? join(here, "council.json") : undefined,
-		join(homedir(), ".omp", "agent", "council.json"),
+		userConfigPath(),
 		join(cwd, ".omp", "council.json"),
 	];
 	for (const path of candidates) {
@@ -129,6 +132,48 @@ function loadConfig(cwd: string): CouncilConfig {
 }
 
 let configLoadError: string | undefined;
+
+// ---------------------------------------------------------------------------
+// Roster mutation (/council add | remove | chair) — persisted to council.json
+// ---------------------------------------------------------------------------
+
+/** User-level config path — honors omp's PI_CODING_AGENT_DIR (profiles) like core does. */
+function userConfigPath(): string {
+	const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".omp", "agent");
+	return join(agentDir, "council.json");
+}
+
+/**
+ * Where a roster change should be written: the project config if it already
+ * owns that key (it would override anything we write user-level), else the
+ * user config.
+ */
+function pickWriteTarget(cwd: string, key: "members" | "chairman"): string {
+	const projectPath = join(cwd, ".omp", "council.json");
+	if (existsSync(projectPath)) {
+		try {
+			const json = JSON.parse(readFileSync(projectPath, "utf-8")) as Record<string, unknown>;
+			if (json[key] !== undefined) return projectPath;
+		} catch {
+			// unreadable project config — fall through to user config
+		}
+	}
+	return userConfigPath();
+}
+
+function updateConfigFile(path: string, mutate: (json: Record<string, unknown>) => void): void {
+	let json: Record<string, unknown> = {};
+	if (existsSync(path)) {
+		try {
+			json = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+		} catch (error) {
+			throw new Error(`${path} is not valid JSON (${error instanceof Error ? error.message : String(error)}) — fix it before using roster commands`);
+		}
+	}
+	mutate(json);
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(json, null, 2)}\n`);
+}
 
 // ---------------------------------------------------------------------------
 // Model resolution + side-calls
@@ -608,10 +653,26 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("council", {
 		description: "Convene the model council: opinions → peer review → chairman synthesis",
 		getArgumentCompletions: prefix => {
+			const p = prefix.trimStart();
+			if (p.toLowerCase().startsWith("remove ")) {
+				const needle = p.slice("remove ".length).trim().toLowerCase();
+				const config = loadConfig(process.cwd());
+				const items = config.members
+					.map(m => ({
+						value: `remove ${m.nick ?? m.model}`,
+						label: m.nick ?? m.model,
+						description: m.model,
+					}))
+					.filter(i => !needle || i.label.toLowerCase().includes(needle));
+				return items.length ? items : null;
+			}
 			const subs = [
-				{ value: "models", label: "models", description: "List authenticated model IDs for council.json" },
+				{ value: "models", label: "models", description: "List authenticated model IDs" },
 				{ value: "roster", label: "roster", description: "Show resolved council seats" },
-			].filter(s => s.value.startsWith(prefix.trim()));
+				{ value: "add ", label: "add", description: "add <model> [nick] — seat a new member" },
+				{ value: "remove ", label: "remove", description: "remove <nick|model> — unseat a member" },
+				{ value: "chair ", label: "chair", description: "chair <model> [nick] — set the chairman" },
+			].filter(s => s.value.trimEnd().startsWith(p) || s.value.startsWith(p));
 			return subs.length ? subs : null;
 		},
 		handler: async (args, ctx: ExtensionCommandContext) => {
@@ -624,6 +685,105 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (trimmed === "roster" || trimmed === "config") {
 				pi.sendMessage({ customType: "council-info", content: `Council roster:\n\n\`\`\`\n${rosterText(ctx)}\n\`\`\`` });
+				return;
+			}
+
+			const [sub = "", ...restTokens] = trimmed.split(/\s+/);
+			const rest = restTokens.join(" ").trim();
+			const canonicalOf = (spec: string): string | undefined => {
+				const m = resolveModel(ctx, spec);
+				return m ? `${m.provider}/${m.id}` : undefined;
+			};
+			const showRoster = (headline: string) =>
+				pi.sendMessage({ customType: "council-info", content: `${headline}\n\n\`\`\`\n${rosterText(ctx)}\n\`\`\`` });
+
+			// -- /council add <model> [nick…] ------------------------------------
+			if (sub === "add" && rest) {
+				const spec = restTokens[0]!;
+				const nick = restTokens.slice(1).join(" ").trim() || undefined;
+				const canonical = canonicalOf(spec);
+				if (!canonical) {
+					ctx.ui.notify(`No authenticated model matches "${spec}" — run /council models to see what's available`, "error");
+					return;
+				}
+				const config = loadConfig(ctx.cwd);
+				if (config.members.some(m => canonicalOf(m.model) === canonical)) {
+					ctx.ui.notify(`${canonical} is already seated`, "warning");
+					return;
+				}
+				const members = [...config.members, { model: canonical, ...(nick ? { nick } : {}) }];
+				try {
+					updateConfigFile(pickWriteTarget(ctx.cwd, "members"), json => {
+						json.members = members;
+					});
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+					return;
+				}
+				showRoster(`Seated ${nick ?? canonical} on the council.`);
+				return;
+			}
+
+			// -- /council remove <nick-or-model> ---------------------------------
+			if (sub === "remove" && rest) {
+				const needle = rest.toLowerCase();
+				const config = loadConfig(ctx.cwd);
+				const matches = config.members.filter(
+					m => (m.nick ?? "").toLowerCase() === needle || m.model.toLowerCase().includes(needle),
+				);
+				if (matches.length === 0) {
+					ctx.ui.notify(
+						`No member matches "${rest}". Current seats: ${config.members.map(m => m.nick ?? m.model).join(", ")}`,
+						"error",
+					);
+					return;
+				}
+				if (matches.length > 1) {
+					ctx.ui.notify(
+						`"${rest}" is ambiguous: ${matches.map(m => m.nick ?? m.model).join(", ")} — be more specific`,
+						"warning",
+					);
+					return;
+				}
+				const members = config.members.filter(m => m !== matches[0]);
+				try {
+					updateConfigFile(pickWriteTarget(ctx.cwd, "members"), json => {
+						json.members = members;
+					});
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+					return;
+				}
+				if (members.length < 2) {
+					ctx.ui.notify("Fewer than 2 seats remain — the council needs at least 2 members to run", "warning");
+				}
+				showRoster(`Removed ${matches[0]!.nick ?? matches[0]!.model} from the council.`);
+				return;
+			}
+
+			// -- /council chair <model> [nick…] ----------------------------------
+			if (sub === "chair" && rest) {
+				const spec = restTokens[0]!;
+				const canonical = canonicalOf(spec);
+				if (!canonical) {
+					ctx.ui.notify(`No authenticated model matches "${spec}" — run /council models to see what's available`, "error");
+					return;
+				}
+				const config = loadConfig(ctx.cwd);
+				const nick =
+					restTokens.slice(1).join(" ").trim() ||
+					config.members.find(m => canonicalOf(m.model) === canonical)?.nick ||
+					canonical.split("/")[1]!;
+				try {
+					updateConfigFile(pickWriteTarget(ctx.cwd, "chairman"), json => {
+						json.chairman = canonical;
+						json.chairmanNick = nick;
+					});
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+					return;
+				}
+				showRoster(`${nick} now chairs the council.`);
 				return;
 			}
 

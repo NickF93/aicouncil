@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0
+
+- Roster management commands: `/council add <model> [nick]`, `/council remove <nick|model>`,
+  `/council chair <model> [nick]` — persisted to `council.json` (project file when it owns
+  the roster, user file otherwise).
+- User config now honors `PI_CODING_AGENT_DIR` (omp profiles).
+- Argument completions for member removal.
+
 ## 0.1.0
 
 - Initial release.
