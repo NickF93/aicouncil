@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+- `/council list` — aligned table of every seat: position (member / chair),
+  model, auth status, and each member's peer-rank from the most recent
+  deliberation (persisted to `.omp/council/last-run.json`).
+
 ## 0.4.1
 
 - **Fix**: auth now capability-detects the registry surface

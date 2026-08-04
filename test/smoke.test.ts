@@ -166,7 +166,8 @@ describe("council extension", () => {
 		const dir = join(h.cwd, ".omp", "council");
 		expect(existsSync(dir)).toBe(true);
 		const files = readdirSync(dir).sort();
-		expect(files.length).toBe(2);
+		expect(files.filter(f => f.endsWith(".md") || f.endsWith(".html")).length).toBe(2);
+		expect(files).toContain("last-run.json");
 		const html = files.find(f => f.endsWith(".html"))!;
 		const md = files.find(f => f.endsWith(".md"))!;
 		const transcript = readFileSync(join(dir, md), "utf-8");
@@ -301,6 +302,24 @@ describe("council extension", () => {
 		factory(h.pi as any);
 		await h.commands.get("council")!.handler("test question", h.ctx);
 		expect(h.notifications.some(n => n.includes("no known auth API"))).toBe(true);
+	});
+
+	test("/council list shows members, positions, and last-run peer ranks", async () => {
+		const h = makeHarness();
+		factory(h.pi as any);
+		// before any run: table with seats, no ranks
+		await h.commands.get("council")!.handler("list", h.ctx);
+		let msg = h.sent.filter(m => m.customType === "council-info").pop();
+		expect(msg.content).toContain("Fable 5");
+		expect(msg.content).toContain("member · chair ⚖"); // Opus 5 is both
+		expect(msg.content).toContain("no deliberations in this project yet");
+		// after a run: ranks appear from last-run.json
+		await h.commands.get("council")!.handler("why is the sky blue?", h.ctx);
+		await h.commands.get("council")!.handler("list", h.ctx);
+		msg = h.sent.filter(m => m.customType === "council-info").pop();
+		expect(msg.content).toContain("1st (");
+		expect(msg.content).toContain("last deliberation:");
+		expect(existsSync(join(h.cwd, ".omp", "council", "last-run.json"))).toBe(true);
 	});
 
 	test("/council doctor reports capabilities", async () => {

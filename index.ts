@@ -138,7 +138,7 @@ function loadConfig(cwd: string): CouncilConfig {
 
 let configLoadError: string | undefined;
 
-const VERSION = "0.4.1";
+const VERSION = "0.4.2";
 
 // ---------------------------------------------------------------------------
 // Roster mutation (/council add | remove | chair) — persisted to council.json
@@ -1111,6 +1111,26 @@ async function runCouncil(
 		ranking: leaderboard?.map(e => e.seat.nick) ?? [],
 	});
 
+	// Small machine-readable summary of the latest run, for /council list.
+	try {
+		const stateDir = join(ctx.cwd, ".omp", "council");
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(
+			join(stateDir, "last-run.json"),
+			`${JSON.stringify(
+				{
+					at: record.startedAtIso,
+					question: question.slice(0, 120),
+					ranking: leaderboard?.map(e => ({ nick: e.seat.nick, score: Number(e.score.toFixed(2)) })) ?? [],
+				},
+				null,
+				2,
+			)}\n`,
+		);
+	} catch {
+		// best-effort
+	}
+
 	// -- Transcript + dashboard ------------------------------------------------
 	let transcriptPath: string | undefined;
 	let dashboardPath: string | undefined;
@@ -1255,6 +1275,7 @@ export default function (pi: ExtensionAPI) {
 			const subs = [
 				{ value: "models", label: "models", description: "List authenticated model IDs" },
 				{ value: "roster", label: "roster", description: "Show resolved council seats" },
+				{ value: "list", label: "list", description: "Table of members, position, and last peer rank" },
 				{ value: "last", label: "last", description: "Open the latest deliberation dashboard" },
 				{ value: "live", label: "live", description: "Open the live agent-communication graph" },
 				{ value: "doctor", label: "doctor", description: "Runtime compatibility report" },
@@ -1309,6 +1330,7 @@ export default function (pi: ExtensionAPI) {
 						"/council <question>            convene the council",
 						"/council models                list authenticated model IDs",
 						"/council roster                show resolved seats + chairman",
+						"/council list                  members table: position + last peer rank",
 						"/council add <model> [nick]    seat a member",
 						"/council remove <nick|model>   unseat a member",
 						"/council chair <model> [nick]  set the chairman",
@@ -1318,6 +1340,46 @@ export default function (pi: ExtensionAPI) {
 						"```",
 					].join("\n"),
 				});
+				return;
+			}
+
+			if (trimmed === "list") {
+				const config = loadConfig(ctx.cwd);
+				const { members, chairman } = resolveSeats(ctx, config);
+				const chairCanonical = chairman.model ? `${chairman.model.provider}/${chairman.model.id}` : chairman.spec;
+
+				// Last-run peer ranking, if a deliberation has happened in this project.
+				let lastRun: { at?: string; question?: string; ranking?: { nick: string; score: number }[] } = {};
+				try {
+					const p = join(ctx.cwd, ".omp", "council", "last-run.json");
+					if (existsSync(p)) lastRun = JSON.parse(readFileSync(p, "utf-8"));
+				} catch {
+					// unreadable state — list without rankings
+				}
+				const posOf = (nick: string): string => {
+					const idx = lastRun.ranking?.findIndex(r => r.nick === nick) ?? -1;
+					if (idx < 0) return "–";
+					const suffix = ["st", "nd", "rd"][idx] ?? "th";
+					return `${idx + 1}${suffix} (${lastRun.ranking![idx]!.score} pts)`;
+				};
+
+				const rows = members.map((m, i) => {
+					const canonical = m.model ? `${m.model.provider}/${m.model.id}` : m.spec;
+					const role = canonical === chairCanonical ? "member · chair ⚖" : "member";
+					const status = m.model ? "✓" : "✗ unresolved";
+					return [`${i + 1}`, m.nick, canonical, role, status, posOf(m.nick)];
+				});
+				if (!members.some(m => (m.model ? `${m.model.provider}/${m.model.id}` : m.spec) === chairCanonical)) {
+					rows.push(["–", chairman.nick, chairCanonical, "chair ⚖", chairman.model ? "✓" : "✗ unresolved", "–"]);
+				}
+				const headers = ["#", "Seat", "Model", "Position", "Auth", "Last peer rank"];
+				const widths = headers.map((h, c) => Math.max(h.length, ...rows.map(r => r[c]!.length)));
+				const fmt = (r: string[]) => r.map((cell, c) => cell.padEnd(widths[c]!)).join("  ");
+				const table = [fmt(headers), fmt(widths.map(w => "─".repeat(w))), ...rows.map(fmt)].join("\n");
+				const footer = lastRun.ranking?.length
+					? `\nlast deliberation: ${lastRun.at ?? "?"} — "${lastRun.question ?? ""}"`
+					: "\nno deliberations in this project yet — peer ranks appear after the first /council run";
+				pi.sendMessage({ customType: "council-info", content: `Council seats:\n\n\`\`\`\n${table}${footer}\n\`\`\`` });
 				return;
 			}
 

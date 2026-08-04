@@ -58,6 +58,7 @@ Manage the roster without touching config files:
 /council remove Codex                          # unseat a member
 /council chair google-antigravity/gemini-3-pro # change the chairman
 /council roster                                # see the result
+/council list                                  # table: seats, positions, last peer rank
 ```
 
 Changes persist to your `council.json` (project-level config wins if it defines the roster).
