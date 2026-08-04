@@ -25,7 +25,7 @@
  * See DEFAULT_CONFIG below for the schema and defaults.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -425,6 +425,205 @@ function aggregateRankings(reviews: string[], n: number): number[] | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Deliberation dashboard (self-contained HTML, one per run)
+// ---------------------------------------------------------------------------
+
+export interface SeatRecord {
+	letter: string;
+	nick: string;
+	model: string;
+	answer?: string;
+	answerMs?: number;
+	answerTokens?: number;
+	review?: string;
+	reviewMs?: number;
+	/** Rank order this seat gave (array of seat indices, best first), if parsed. */
+	rankingGiven?: number[];
+	error?: string;
+}
+
+export interface DeliberationRecord {
+	question: string;
+	startedAtIso: string;
+	durationMs: number;
+	chairman: { nick: string; model: string; error?: string; ms?: number };
+	seats: SeatRecord[];
+	/** Average Borda points per seat index, if any rankings parsed. */
+	borda?: number[];
+	verdict?: string;
+	failures: string[];
+	settings: { effort?: string; chairmanEffort?: string; timeoutMs: number; contextIncluded: boolean };
+}
+
+function escapeHtml(s: string): string {
+	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/** Tiny markdown renderer for answer bodies — headers, fences, inline code, bold, lists. */
+function mdToHtml(md: string): string {
+	const fences: string[] = [];
+	let s = md.replace(/```([\s\S]*?)```/g, (_m, code: string) => {
+		fences.push(`<pre class="code">${escapeHtml(code.replace(/^[a-z]*\n/, ""))}</pre>`);
+		return ` ${fences.length - 1} `;
+	});
+	s = escapeHtml(s);
+	s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+	s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+	s = s.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,;:!?]|$)/gm, "$1<em>$2</em>");
+	s = s.replace(/^######? (.+)$/gm, "<h5>$1</h5>").replace(/^#{1,4} (.+)$/gm, "<h4>$1</h4>");
+	s = s.replace(/^[-*] (.+)$/gm, "<li>$1</li>").replace(/(<li>[\s\S]*?<\/li>)(?!\s*<li>)/g, "<ul>$1</ul>");
+	s = s
+		.split(/\n{2,}/)
+		.map(p => (/^\s*<(h4|h5|ul|pre)/.test(p) ? p : `<p>${p.replace(/\n/g, "<br>")}</p>`))
+		.join("\n");
+	return s.replace(/ (\d+) /g, (_m, i: string) => fences[Number(i)]!);
+}
+
+function fmtMs(ms: number | undefined): string {
+	if (ms === undefined) return "–";
+	return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** Categorical slots (validated reference palette; color follows the seat, fixed order). */
+const SEAT_COLORS_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"];
+const SEAT_COLORS_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"];
+
+export function renderDashboardHtml(rec: DeliberationRecord): string {
+	const n = rec.seats.length;
+	const answered = rec.seats.filter(s => s.answer);
+	const reviewed = rec.seats.filter(s => s.review);
+	const seatVars = rec.seats
+		.map((_s, i) => `--seat-${i}: ${SEAT_COLORS_LIGHT[i % 8]}; --seat-${i}-d: ${SEAT_COLORS_DARK[i % 8]};`)
+		.join(" ");
+
+	// Borda leaderboard, sorted by score, colors stay with the seat entity.
+	const maxScore = rec.borda ? Math.max(...rec.borda, 0.001) : 0;
+	const leaderboard = rec.borda
+		? rec.seats
+				.map((s, i) => ({ s, i, score: rec.borda![i] ?? 0 }))
+				.filter(e => e.s.answer)
+				.sort((a, b) => b.score - a.score)
+				.map(
+					e => `
+      <div class="lb-row" title="${escapeHtml(e.s.nick)} — avg ${e.score.toFixed(1)} Borda pts from peer rankings">
+        <span class="lb-name"><i class="chip" style="background:var(--seat-${e.i})"></i>${escapeHtml(e.s.nick)}</span>
+        <span class="lb-track"><span class="lb-bar" style="width:${Math.max(3, (e.score / maxScore) * 100)}%;background:var(--seat-${e.i})"></span></span>
+        <span class="lb-val">${e.score.toFixed(1)}</span>
+      </div>`,
+				)
+				.join("")
+		: `<p class="muted">No parseable rankings this run.</p>`;
+
+	// Reviewer × subject rank matrix. rank 1 = strongest ordinal step.
+	const ordinal = ["#86b6ef", "#9ec5f4", "#b7d3f6", "#cde2fb", "#e7f0fc", "#f1f6fd", "#f6f9fe", "#fafcff"];
+	const matrixHead = answered.map(s => `<th title="${escapeHtml(s.nick)}">${s.letter}</th>`).join("");
+	const matrixRows = reviewed
+		.map(r => {
+			const cells = answered
+				.map(subject => {
+					const subjectIdx = rec.seats.indexOf(subject);
+					const pos = r.rankingGiven?.indexOf(subjectIdx);
+					if (pos === undefined || pos < 0) return `<td class="na">–</td>`;
+					const bg = ordinal[Math.min(pos, ordinal.length - 1)]!;
+					return `<td style="background:${bg}" title="${escapeHtml(r.nick)} ranked ${escapeHtml(subject.nick)} #${pos + 1}">${pos + 1}</td>`;
+				})
+				.join("");
+			const ri = rec.seats.indexOf(r);
+			return `<tr><th><i class="chip" style="background:var(--seat-${ri})"></i>${escapeHtml(r.nick)}</th>${cells}</tr>`;
+		})
+		.join("");
+
+	const seatCards = rec.seats
+		.map((s, i) => {
+			const status = s.answer
+				? `<span class="ok">✓ answered</span> · ${fmtMs(s.answerMs)}${s.answerTokens ? ` · ${s.answerTokens} tok` : ""}`
+				: `<span class="fail">✗ ${escapeHtml(s.error ?? "no answer")}</span>`;
+			const review = s.review
+				? `<details><summary>Peer review (${fmtMs(s.reviewMs)})</summary><div class="body">${mdToHtml(s.review)}</div></details>`
+				: "";
+			const answer = s.answer
+				? `<details><summary>Opinion — Seat ${s.letter}</summary><div class="body">${mdToHtml(s.answer)}</div></details>`
+				: "";
+			return `
+    <article class="card seat">
+      <header><i class="chip big" style="background:var(--seat-${i})"></i>
+        <div><h3>${escapeHtml(s.nick)} <span class="badge">Seat ${s.letter}</span></h3>
+        <p class="model">${escapeHtml(s.model)}</p></div>
+      </header>
+      <p class="status">${status}</p>
+      ${answer}${review}
+    </article>`;
+		})
+		.join("");
+
+	return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Council — ${escapeHtml(rec.question.slice(0, 60))}</title>
+<style>
+  :root { color-scheme: light dark;
+    --surface:#fcfcfb; --page:#f9f9f7; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --border:rgba(11,11,11,.10); --good:#0ca30c; --critical:#d03b3b; ${seatVars} }
+  @media (prefers-color-scheme: dark) { :root {
+    --surface:#1a1a19; --page:#0d0d0d; --ink:#ffffff; --ink2:#c3c2b7; --grid:#2c2c2a; --border:rgba(255,255,255,.10);
+    ${rec.seats.map((_s, i) => `--seat-${i}: var(--seat-${i}-d);`).join(" ")} } }
+  * { box-sizing:border-box } body { margin:0; background:var(--page); color:var(--ink);
+    font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; padding:28px; }
+  main { max-width:1080px; margin:0 auto; display:grid; gap:16px }
+  h1 { font-size:21px; margin:0 0 2px } h2 { font-size:15px; margin:0 0 10px } h3 { font-size:15px; margin:0 }
+  h4,h5 { margin:12px 0 4px } .muted { color:var(--muted) } .meta { color:var(--ink2); font-size:13px }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:16px 18px }
+  .flow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:13px; color:var(--ink2) }
+  .stage { border:1px solid var(--grid); border-radius:999px; padding:4px 12px; background:var(--surface) }
+  .stage b { color:var(--ink) } .arrow { color:var(--muted) }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px }
+  .seat header { display:flex; gap:10px; align-items:center; margin-bottom:6px }
+  .chip { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:7px; flex:none }
+  .chip.big { width:14px; height:14px; border-radius:4px; margin:0 }
+  .badge { font-size:11px; color:var(--ink2); border:1px solid var(--grid); border-radius:999px; padding:1px 8px; margin-left:6px; vertical-align:2px }
+  .model { margin:0; font-size:12px; color:var(--muted); font-family:ui-monospace,monospace }
+  .status { font-size:13px; color:var(--ink2); margin:4px 0 8px }
+  .ok { color:var(--good); font-weight:600 } .fail { color:var(--critical); font-weight:600 }
+  details { border-top:1px solid var(--grid); padding:7px 0 } summary { cursor:pointer; font-size:13px; color:var(--ink2) }
+  .body { font-size:14px } .body p { margin:8px 0 }
+  .code, code { font-family:ui-monospace,monospace; font-size:12.5px; background:var(--page); border:1px solid var(--grid); border-radius:6px }
+  code { padding:1px 5px } .code { padding:10px 12px; overflow:auto; white-space:pre-wrap }
+  .lb-row { display:grid; grid-template-columns:170px 1fr 46px; gap:10px; align-items:center; margin:7px 0; font-size:13px }
+  .lb-name { display:flex; align-items:center; color:var(--ink2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .lb-track { background:var(--page); border-radius:4px; height:14px; border-left:2px solid var(--grid) }
+  .lb-bar { display:block; height:100%; border-radius:0 4px 4px 0 }
+  .lb-val { text-align:right; font-variant-numeric:tabular-nums; color:var(--ink) }
+  table { border-collapse:separate; border-spacing:2px; font-size:13px; font-variant-numeric:tabular-nums }
+  th { font-weight:600; color:var(--ink2); text-align:left; padding:4px 8px }
+  td { width:38px; text-align:center; padding:4px 0; border-radius:4px; color:#0b0b0b } td.na { color:var(--muted); background:transparent }
+  .verdict { border-left:3px solid var(--seat-0) } .fails { border-left:3px solid var(--critical) }
+  footer { color:var(--muted); font-size:12px; text-align:center; padding:8px }
+</style></head><body><main>
+  <div class="card">
+    <h1>🏛️ Council deliberation</h1>
+    <p class="meta">${escapeHtml(rec.startedAtIso)} · total ${fmtMs(rec.durationMs)} · effort ${escapeHtml(rec.settings.effort ?? "default")} · chair effort ${escapeHtml(rec.settings.chairmanEffort ?? "default")} · timeout ${Math.round(rec.settings.timeoutMs / 1000)}s · session context ${rec.settings.contextIncluded ? "on" : "off"}</p>
+    <p><strong>Q:</strong> ${escapeHtml(rec.question)}</p>
+    <div class="flow">
+      <span class="stage"><b>1 · Opinions</b> ${answered.length}/${n} answered</span><span class="arrow">→</span>
+      <span class="stage"><b>2 · Anonymized review</b> ${reviewed.length} reviewers</span><span class="arrow">→</span>
+      <span class="stage"><b>3 · Synthesis</b> ${escapeHtml(rec.chairman.nick)}${rec.chairman.error ? " ✗" : " ✓"}</span>
+    </div>
+  </div>
+  <div class="card verdict">
+    <h2>Verdict — chaired by ${escapeHtml(rec.chairman.nick)} <span class="model">${escapeHtml(rec.chairman.model)}</span></h2>
+    <div class="body">${rec.verdict ? mdToHtml(rec.verdict) : `<p class="fail">✗ Chairman failed: ${escapeHtml(rec.chairman.error ?? "unknown")}</p>`}</div>
+  </div>
+  <div class="card">
+    <h2>Peer ranking — Borda average (higher is better)</h2>
+    ${leaderboard}
+    ${matrixRows ? `<h2 style="margin-top:16px">Who ranked whom (1 = best)</h2><table><thead><tr><th>reviewer ↓</th>${matrixHead}</tr></thead><tbody>${matrixRows}</tbody></table>` : ""}
+  </div>
+  <div class="grid">${seatCards}</div>
+  ${rec.failures.length ? `<div class="card fails"><h2>⚠ Issues</h2><ul>${rec.failures.map(f => `<li>${escapeHtml(f)}</li>`).join("")}</ul></div>` : ""}
+  <footer>generated by aicouncil · the letters are what reviewers saw; identities were revealed only after ranking</footer>
+</main></body></html>`;
+}
+
+// ---------------------------------------------------------------------------
 // The council run
 // ---------------------------------------------------------------------------
 
@@ -432,6 +631,7 @@ interface CouncilRunResult {
 	verdict: string;
 	summaryMarkdown: string;
 	transcriptPath?: string;
+	dashboardPath?: string;
 	failures: string[];
 }
 
@@ -444,6 +644,21 @@ async function runCouncil(
 	const config = loadConfig(ctx.cwd);
 	const { members, chairman } = resolveSeats(ctx, config);
 	const failures: string[] = [];
+	const startedAt = Date.now();
+
+	// Live TUI widget: per-seat status through the three stages.
+	const seatStage = new Map<string, string>();
+	const renderWidget = ctx.hasUI
+		? () => {
+				const lines = [`🏛️ council · ${question.slice(0, 60)}${question.length > 60 ? "…" : ""}`];
+				for (const [nick, state] of seatStage) lines.push(`   ${nick.padEnd(12)} ${state}`);
+				ctx.ui.setWidget("council", lines);
+			}
+		: () => {};
+	const setStage = (nick: string, state: string) => {
+		seatStage.set(nick, state);
+		renderWidget();
+	};
 
 	const active = members.filter(m => m.model).slice(0, LETTERS.length);
 	for (const m of members.filter(m => !m.model)) {
@@ -473,9 +688,13 @@ async function runCouncil(
 	// -- Stage 1: opinions ----------------------------------------------------
 	onProgress?.(`council: ${shuffled.length} members deliberating…`);
 	const opinions = await Promise.all(
-		shuffled.map(seat =>
-			callModel(ctx, seat, opinionSystemPrompt(seat.nick, shuffled.length), qBlock, config.maxTokensOpinion, config.timeoutMs, signal),
-		),
+		shuffled.map(seat => {
+			setStage(seat.nick, "⏳ forming opinion…");
+			return callModel(ctx, seat, opinionSystemPrompt(seat.nick, shuffled.length), qBlock, config.maxTokensOpinion, config.timeoutMs, signal).then(res => {
+				setStage(seat.nick, res.error ? `✗ ${res.error.slice(0, 40)}` : `✓ answered ${fmtMs(res.elapsedMs)}`);
+				return res;
+			});
+		}),
 	);
 
 	const answered: { seat: Seat; letter: string; answer: string }[] = [];
@@ -499,15 +718,19 @@ async function runCouncil(
 	onProgress?.(`council: peer review (${answered.length} reviewers)…`);
 	const reviewInput = `${qBlock}\n\n---\n\nThe ${answered.length} responses:\n\n${answersBlock}`;
 	const reviewResults = await Promise.all(
-		answered.map(a =>
-			callModel(ctx, a.seat, reviewSystemPrompt(a.seat.nick, answered.length), reviewInput, config.maxTokensReview, config.timeoutMs, signal),
-		),
+		answered.map(a => {
+			setStage(a.seat.nick, "⏳ reviewing peers…");
+			return callModel(ctx, a.seat, reviewSystemPrompt(a.seat.nick, answered.length), reviewInput, config.maxTokensReview, config.timeoutMs, signal).then(res => {
+				setStage(a.seat.nick, res.error ? `✓ answered · ✗ review failed` : `✓ answered · ✓ reviewed ${fmtMs(res.elapsedMs)}`);
+				return res;
+			});
+		}),
 	);
-	const reviews: { seat: Seat; text: string }[] = [];
+	const reviews: { seat: Seat; text: string; elapsedMs: number }[] = [];
 	reviewResults.forEach((res, i) => {
 		const seat = answered[i]!.seat;
 		if (res.error || !res.text) failures.push(`${seat.nick} (review): ${res.error ?? "empty"}`);
-		else reviews.push({ seat, text: res.text });
+		else reviews.push({ seat, text: res.text, elapsedMs: res.elapsedMs });
 	});
 
 	const rankingScores = aggregateRankings(reviews.map(r => r.text), answered.length);
@@ -519,6 +742,7 @@ async function runCouncil(
 
 	// -- Stage 3: chairman synthesis ------------------------------------------
 	onProgress?.(`council: ${chairman.nick} synthesizing…`);
+	setStage(`⚖ ${chairman.nick}`, "⏳ synthesizing verdict…");
 	const reviewsBlock =
 		reviews.length > 0
 			? reviews.map((r, i) => `### Review by member ${i + 1}\n\n${r.text}`).join("\n\n---\n\n")
@@ -534,13 +758,64 @@ async function runCouncil(
 		signal,
 	);
 
-	// -- Transcript ------------------------------------------------------------
+	setStage(`⚖ ${chairman.nick}`, synthesis.error ? "✗ synthesis failed" : `✓ verdict ${fmtMs(synthesis.elapsedMs)}`);
+
+	// -- Deliberation record (feeds the HTML dashboard) ------------------------
+	const seatRecords: SeatRecord[] = shuffled.map((seat, i) => {
+		const op = opinions[i]!;
+		const a = answered.find(x => x.seat === seat);
+		const rv = reviews.find(x => x.seat === seat);
+		const order = rv ? parseRanking(rv.text, answered.length) : undefined;
+		return {
+			letter: a?.letter ?? "–",
+			nick: seat.nick,
+			model: seat.model ? `${seat.model.provider}/${seat.model.id}` : seat.spec,
+			answer: a?.answer,
+			answerMs: a ? op.elapsedMs : undefined,
+			answerTokens: a ? op.outputTokens : undefined,
+			review: rv?.text,
+			reviewMs: rv?.elapsedMs,
+			rankingGiven: order?.map(ai => shuffled.indexOf(answered[ai]!.seat)).filter(x => x >= 0),
+			error: op.error,
+		};
+	});
+	const record: DeliberationRecord = {
+		question,
+		startedAtIso: new Date(startedAt).toISOString().slice(0, 19).replace("T", " "),
+		durationMs: Date.now() - startedAt,
+		chairman: {
+			nick: chairman.nick,
+			model: `${chairman.model.provider}/${chairman.model.id}`,
+			error: synthesis.error,
+			ms: synthesis.elapsedMs,
+		},
+		seats: seatRecords,
+		borda: rankingScores
+			? shuffled.map(seat => {
+					const ai = answered.findIndex(x => x.seat === seat);
+					return ai >= 0 ? (rankingScores[ai] ?? 0) : 0;
+				})
+			: undefined,
+		verdict: synthesis.text || undefined,
+		failures,
+		settings: {
+			effort: config.effort,
+			chairmanEffort: config.chairmanEffort,
+			timeoutMs: config.timeoutMs,
+			contextIncluded: Boolean(sessionContext),
+		},
+	};
+
+	// -- Transcript + dashboard ------------------------------------------------
 	let transcriptPath: string | undefined;
+	let dashboardPath: string | undefined;
 	if (config.writeTranscript) {
 		try {
 			const dir = join(ctx.cwd, ".omp", "council");
 			mkdirSync(dir, { recursive: true });
 			const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+			dashboardPath = join(dir, `${stamp}.html`);
+			writeFileSync(dashboardPath, renderDashboardHtml(record));
 			transcriptPath = join(dir, `${stamp}.md`);
 			const identity = answered.map(a => `- Response ${a.letter} = **${a.seat.nick}** (${a.seat.model?.provider}/${a.seat.model?.id})`).join("\n");
 			writeFileSync(
@@ -570,6 +845,7 @@ async function runCouncil(
 			);
 		} catch {
 			transcriptPath = undefined; // transcript is best-effort
+			dashboardPath = undefined;
 		}
 	}
 
@@ -585,6 +861,7 @@ async function runCouncil(
 		`Chair: ${chairman.nick} · Seats: ${seatLine}`,
 		`Peer ranking: ${rankLine}`,
 	];
+	if (dashboardPath) footerParts.push(`Dashboard: ${dashboardPath} (or /council last)`);
 	if (transcriptPath) footerParts.push(`Full transcript: ${transcriptPath}`);
 	if (failures.length) footerParts.push(`Issues: ${failures.join(" | ")}`);
 
@@ -598,7 +875,7 @@ async function runCouncil(
 			`---`,
 			footerParts.join("\n"),
 		].join("\n");
-		return { verdict: fallback, summaryMarkdown: fallback, transcriptPath, failures };
+		return { verdict: fallback, summaryMarkdown: fallback, transcriptPath, dashboardPath, failures };
 	}
 
 	const summaryMarkdown = [
@@ -610,7 +887,7 @@ async function runCouncil(
 		footerParts.map(p => `*${p}*`).join("\n"),
 	].join("\n");
 
-	return { verdict: synthesis.text, summaryMarkdown, transcriptPath, failures };
+	return { verdict: synthesis.text, summaryMarkdown, transcriptPath, dashboardPath, failures };
 }
 
 // ---------------------------------------------------------------------------
@@ -669,6 +946,7 @@ export default function (pi: ExtensionAPI) {
 			const subs = [
 				{ value: "models", label: "models", description: "List authenticated model IDs" },
 				{ value: "roster", label: "roster", description: "Show resolved council seats" },
+				{ value: "last", label: "last", description: "Open the latest deliberation dashboard" },
 				{ value: "add ", label: "add", description: "add <model> [nick] — seat a new member" },
 				{ value: "remove ", label: "remove", description: "remove <nick|model> — unseat a member" },
 				{ value: "chair ", label: "chair", description: "chair <model> [nick] — set the chairman" },
@@ -685,6 +963,25 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (trimmed === "roster" || trimmed === "config") {
 				pi.sendMessage({ customType: "council-info", content: `Council roster:\n\n\`\`\`\n${rosterText(ctx)}\n\`\`\`` });
+				return;
+			}
+
+			if (trimmed === "last") {
+				const dir = join(ctx.cwd, ".omp", "council");
+				const dashboards = existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith(".html")).sort() : [];
+				const latest = dashboards[dashboards.length - 1];
+				if (!latest) {
+					ctx.ui.notify("No council dashboards yet — run /council <question> first", "warning");
+					return;
+				}
+				const fullPath = join(dir, latest);
+				const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+				try {
+					await pi.exec(opener, [fullPath]);
+					ctx.ui.notify(`Opened ${latest}`, "info");
+				} catch {
+					pi.sendMessage({ customType: "council-info", content: `Latest council dashboard: ${fullPath}` });
+				}
 				return;
 			}
 
@@ -812,6 +1109,7 @@ export default function (pi: ExtensionAPI) {
 			} finally {
 				ctx.ui.setStatus("council", undefined);
 				ctx.ui.setWorkingMessage();
+				if (ctx.hasUI) ctx.ui.setWidget("council", undefined);
 			}
 		},
 	});
@@ -851,6 +1149,8 @@ export default function (pi: ExtensionAPI) {
 						content: [{ type: "text", text: `Council failed: ${error instanceof Error ? error.message : String(error)}` }],
 						isError: true,
 					};
+				} finally {
+					if (ctx.hasUI) ctx.ui.setWidget("council", undefined);
 				}
 			},
 		});

@@ -158,14 +158,33 @@ describe("council extension", () => {
 		expect(verdict.content).toContain("Peer ranking");
 		expect(verdict.display).toBe(true);
 
-		// transcript written
+		// transcript + dashboard written
 		const dir = join(h.cwd, ".omp", "council");
 		expect(existsSync(dir)).toBe(true);
-		const files = readdirSync(dir);
-		expect(files.length).toBe(1);
-		const transcript = readFileSync(join(dir, files[0]!), "utf-8");
+		const files = readdirSync(dir).sort();
+		expect(files.length).toBe(2);
+		const html = files.find(f => f.endsWith(".html"))!;
+		const md = files.find(f => f.endsWith(".md"))!;
+		const transcript = readFileSync(join(dir, md), "utf-8");
 		expect(transcript).toContain("Stage 1 — opinions");
 		expect(transcript).toContain("Stage 3 — chairman synthesis");
+		const dashboard = readFileSync(join(dir, html), "utf-8");
+		expect(dashboard).toContain("Council deliberation");
+		expect(dashboard).toContain("Fable 5");
+		expect(dashboard).toContain("Peer ranking — Borda average");
+		expect(dashboard).toContain("Who ranked whom");
+		expect(dashboard).toContain("Rayleigh scattering");
+		expect(verdict.content).toContain("Dashboard:");
+	});
+
+	test("/council last surfaces the latest dashboard", async () => {
+		const h = makeHarness();
+		factory(h.pi as any);
+		await h.commands.get("council")!.handler("what is 2+2?", h.ctx);
+		await h.commands.get("council")!.handler("last", h.ctx);
+		// fake pi has no exec → falls back to sending the path
+		const info = h.sent.filter(m => m.customType === "council-info").pop();
+		expect(info.content).toContain(".html");
 	});
 
 	test("council tool execute returns verdict text", async () => {

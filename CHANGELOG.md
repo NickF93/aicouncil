@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+- **Deliberation dashboard**: every run writes a self-contained `council-<ts>.html`
+  next to the markdown transcript — roster + config panel, 3-stage flow, per-seat
+  opinion cards with the anonymization map revealed, who-ranked-whom matrix,
+  Borda leaderboard, chairman verdict. Light + dark, zero dependencies.
+- `/council last` opens the latest dashboard in your browser.
+- Live seat-status widget in the omp TUI while the council deliberates.
+
 ## 0.2.0
 
 - Roster management commands: `/council add <model> [nick]`, `/council remove <nick|model>`,

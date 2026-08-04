@@ -68,9 +68,18 @@ conversation works:
 
 > ask the council whether this migration strategy is safe
 
-The verdict lands in the chat (and in context, so the agent can act on it). The full
-deliberation — every opinion, every review, who was which letter — is written to
-`<cwd>/.omp/council/<timestamp>.md`.
+The verdict lands in the chat (and in context, so the agent can act on it). Every run
+also writes a **self-contained HTML dashboard** — roster, the 3-stage flow, each seat's
+opinion with timing/tokens, the anonymization map, a who-ranked-whom matrix, and the
+Borda leaderboard — plus a markdown transcript, to `<cwd>/.omp/council/`. Open the
+latest with:
+
+```
+/council last
+```
+
+While the council deliberates, a live status widget in omp shows each seat thinking,
+answering, reviewing, and the chair synthesizing.
 
 ## Config
 
