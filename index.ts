@@ -31,6 +31,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gt } from "semver";
 import { completeSimple } from "@oh-my-pi/pi-ai";
 import type { AssistantMessage, Effort, Model, UserMessage } from "@oh-my-pi/pi-ai";
 import type {
@@ -1303,16 +1304,17 @@ export default function (pi: ExtensionAPI) {
 						signal: AbortSignal.timeout(10_000),
 					});
 					latest = ((await res.json()) as { version?: string }).version;
+					if (latest && !gt(latest, VERSION)) {
+						ctx.ui.notify(`aicouncil ${VERSION} is up to date`, "info");
+						return;
+					}
 				} catch (error) {
 					ctx.ui.notify(`Could not reach npm: ${error instanceof Error ? error.message : String(error)}`, "error");
+					return;
 				} finally {
 					ctx.ui.setStatus("council", undefined);
 				}
 				if (!latest) return;
-				if (latest === VERSION) {
-					ctx.ui.notify(`aicouncil ${VERSION} is up to date`, "info");
-					return;
-				}
 				// Manual folder installs shouldn't be shadowed by a surprise plugin install.
 				const installedAsPlugin = (() => {
 					try {

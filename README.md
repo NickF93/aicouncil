@@ -22,7 +22,8 @@ instructed to surface disagreements, not paper over them.
 omp install @codeninza/aicouncil
 ```
 
-Or manually: drop this folder into `~/.omp/agent/extensions/`.
+Or manually: drop this folder into `~/.omp/agent/extensions/`, then run
+`bun install --production` inside it to install runtime dependencies.
 
 ## Setup
 

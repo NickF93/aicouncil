@@ -5,6 +5,9 @@
 - **Fix**: explicitly display council informational messages in OMP, including
   command output, update notices, roster changes, and dashboard/live URL fallbacks.
 
+- **Fix**: `/council update` only offers npm versions with strictly newer SemVer
+  precedence, ignoring downgrades and build-metadata-only differences.
+
 ## 0.4.3
 
 - `/council update` — checks npm for the latest version; self-updates via

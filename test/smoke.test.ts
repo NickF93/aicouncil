@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z as realZod } from "zod";
+import { version } from "../package.json";
 
 // ---- mock the provider layer BEFORE importing the extension ----------------
 let callLog: { system: string; user: string; model: string }[] = [];
@@ -338,21 +339,41 @@ describe("council extension", () => {
 		expect(existsSync(join(h.cwd, ".omp", "council", "last-run.json"))).toBe(true);
 	});
 
-	test("/council update: up to date and newer-version paths", async () => {
+	test.each([
+		["0.3.9", false],
+		["0.4.2", false],
+		["0.4.3", false],
+		["0.4.3-beta.1", false],
+		[version, false],
+		[`${version}+build.1`, false],
+		["0.4.5-beta.1", true],
+		["0.4.5", true],
+		["0.4.10", true],
+		["0.10.0", true],
+		["1.0.0", true],
+	] as const)("/council update only offers newer versions (%s)", async (latest, newer) => {
 		const h = makeHarness();
-		factory(h.pi as any);
+		// The harness implements only the extension API surface exercised here.
+		const pi = h.pi as unknown as Parameters<typeof factory>[0];
+		factory(pi);
 		const realFetch = globalThis.fetch;
+		globalThis.fetch = Object.assign(async () => Response.json({ version: latest }), {
+			preconnect: realFetch.preconnect,
+		});
 		try {
-			// up to date
-			globalThis.fetch = (async () => ({ json: async () => ({ version: "0.4.3" }) })) as any;
 			await h.commands.get("council")!.handler("update", h.ctx);
-			expect(h.notifications.some(n => n.includes("up to date"))).toBe(true);
-			// newer version, manual install (test file path has no /plugins/) → instructions
-			globalThis.fetch = (async () => ({ json: async () => ({ version: "9.9.9" }) })) as any;
-			await h.commands.get("council")!.handler("update", h.ctx);
-			const msg = h.sent.filter(m => m.customType === "council-info").pop();
-			expect(msg.content).toContain("9.9.9");
-			expect(msg.content).toContain("omp install @codeninza/aicouncil");
+			if (newer) {
+				expect(h.sent).toEqual([
+					expect.objectContaining({
+						customType: "council-info",
+						display: true,
+						content: expect.stringContaining(`${latest} is available`),
+					}),
+				]);
+			} else {
+				expect(h.sent).toEqual([]);
+				expect(h.notifications).toContain(`aicouncil ${version} is up to date`);
+			}
 		} finally {
 			globalThis.fetch = realFetch;
 		}
@@ -364,7 +385,7 @@ describe("council extension", () => {
 		await h.commands.get("council")!.handler("doctor", h.ctx);
 		const msg = h.sent.find(m => m.customType === "council-info");
 		expect(msg.content).toContain("auth surface");
-		expect(msg.content).toContain("aicouncil 0.4.3");
+		expect(msg.content).toContain(`aicouncil ${version}`);
 	});
 
 	test("degrades gracefully when a member fails auth", async () => {
