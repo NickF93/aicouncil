@@ -122,6 +122,22 @@ describe("council extension", () => {
 		expect(items?.[0]?.value).toBe("models");
 	});
 
+	test.each(["help", "models", "doctor", "list", "roster", "config", "members"])(
+		"informational commands request visible output (%s)",
+		async command => {
+			const h = makeHarness();
+			// The harness implements only the extension API surface exercised here.
+			const pi = h.pi as unknown as Parameters<typeof factory>[0];
+			factory(pi);
+			callLog = [];
+			await h.commands.get("council")!.handler(command, h.ctx);
+			expect(callLog).toEqual([]);
+			expect(h.sent).toEqual([
+				expect.objectContaining({ customType: "council-info", display: true }),
+			]);
+		},
+	);
+
 	test("/council models lists authenticated models", async () => {
 		const h = makeHarness();
 		factory(h.pi as any);

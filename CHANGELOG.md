@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Fix**: explicitly display council informational messages in OMP, including
+  command output, update notices, roster changes, and dashboard/live URL fallbacks.
+
 ## 0.4.3
 
 - `/council update` — checks npm for the latest version; self-updates via

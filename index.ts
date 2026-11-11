@@ -1292,7 +1292,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (trimmed === "models") {
 				ctx.ui.notify("Authenticated models written below", "info");
-				pi.sendMessage({ customType: "council-info", content: `Models available for council.json:\n\n\`\`\`\n${listModels(ctx)}\n\`\`\`` });
+				pi.sendMessage({ customType: "council-info", display: true, content: `Models available for council.json:\n\n\`\`\`\n${listModels(ctx)}\n\`\`\`` });
 				return;
 			}
 			if (trimmed === "update") {
@@ -1324,6 +1324,7 @@ export default function (pi: ExtensionAPI) {
 				if (!installedAsPlugin) {
 					pi.sendMessage({
 						customType: "council-info",
+						display: true,
 						content: `aicouncil ${latest} is available (you have ${VERSION}). This copy was installed manually, so update it by replacing the folder — or switch to npm installs with \`omp install @codeninza/aicouncil\`.`,
 					});
 					return;
@@ -1334,6 +1335,7 @@ export default function (pi: ExtensionAPI) {
 					if (result.code === 0) {
 						pi.sendMessage({
 							customType: "council-info",
+							display: true,
 							content: `✓ aicouncil updated ${VERSION} → ${latest}. Restart omp (or /reload) to load the new version.`,
 						});
 					} else {
@@ -1342,6 +1344,7 @@ export default function (pi: ExtensionAPI) {
 				} catch {
 					pi.sendMessage({
 						customType: "council-info",
+						display: true,
 						content: `aicouncil ${latest} is available (you have ${VERSION}). Update with: \`omp install @codeninza/aicouncil\``,
 					});
 				} finally {
@@ -1373,13 +1376,14 @@ export default function (pi: ExtensionAPI) {
 					``,
 					rosterText(ctx),
 				].join("\n");
-				pi.sendMessage({ customType: "council-info", content: `Council doctor:\n\n\`\`\`\n${report}\n\`\`\`` });
+				pi.sendMessage({ customType: "council-info", display: true, content: `Council doctor:\n\n\`\`\`\n${report}\n\`\`\`` });
 				return;
 			}
 
 			if (trimmed === "help") {
 				pi.sendMessage({
 					customType: "council-info",
+					display: true,
 					content: [
 						"aicouncil commands:",
 						"```",
@@ -1436,12 +1440,12 @@ export default function (pi: ExtensionAPI) {
 				const footer = lastRun.ranking?.length
 					? `\nlast deliberation: ${lastRun.at ?? "?"} — "${lastRun.question ?? ""}"`
 					: "\nno deliberations in this project yet — peer ranks appear after the first /council run";
-				pi.sendMessage({ customType: "council-info", content: `Council seats:\n\n\`\`\`\n${table}${footer}\n\`\`\`` });
+				pi.sendMessage({ customType: "council-info", display: true, content: `Council seats:\n\n\`\`\`\n${table}${footer}\n\`\`\`` });
 				return;
 			}
 
 			if (trimmed === "roster" || trimmed === "config" || trimmed === "members") {
-				pi.sendMessage({ customType: "council-info", content: `Council roster:\n\n\`\`\`\n${rosterText(ctx)}\n\`\`\`` });
+				pi.sendMessage({ customType: "council-info", display: true, content: `Council roster:\n\n\`\`\`\n${rosterText(ctx)}\n\`\`\`` });
 				return;
 			}
 
@@ -1455,7 +1459,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				const fullPath = join(dir, latest);
 				if (await openExternal(pi, fullPath)) ctx.ui.notify(`Opened ${latest}`, "info");
-				else pi.sendMessage({ customType: "council-info", content: `Latest council dashboard: ${fullPath}` });
+				else pi.sendMessage({ customType: "council-info", display: true, content: `Latest council dashboard: ${fullPath}` });
 				return;
 			}
 
@@ -1468,7 +1472,7 @@ export default function (pi: ExtensionAPI) {
 				const url = `http://localhost:${srv.port}/`;
 				liveOpened = true;
 				if (await openExternal(pi, url)) ctx.ui.notify(`Live council graph: ${url}`, "info");
-				else pi.sendMessage({ customType: "council-info", content: `Live council graph: ${url}` });
+				else pi.sendMessage({ customType: "council-info", display: true, content: `Live council graph: ${url}` });
 				return;
 			}
 
@@ -1479,7 +1483,7 @@ export default function (pi: ExtensionAPI) {
 				return m ? `${m.provider}/${m.id}` : undefined;
 			};
 			const showRoster = (headline: string) =>
-				pi.sendMessage({ customType: "council-info", content: `${headline}\n\n\`\`\`\n${rosterText(ctx)}\n\`\`\`` });
+				pi.sendMessage({ customType: "council-info", display: true, content: `${headline}\n\n\`\`\`\n${rosterText(ctx)}\n\`\`\`` });
 
 			// -- /council add <model> [nick…] ------------------------------------
 			if (sub === "add" && rest) {
