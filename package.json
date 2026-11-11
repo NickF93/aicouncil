@@ -1,6 +1,6 @@
 {
   "name": "@codeninza/aicouncil",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "A council of frontier models for oh-my-pi: independent opinions → anonymized peer review → chairman synthesis, running on your existing subscriptions (Anthropic, Codex, Antigravity — no API keys).",
   "type": "module",
   "main": "./index.ts",

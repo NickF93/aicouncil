@@ -139,7 +139,7 @@ function loadConfig(cwd: string): CouncilConfig {
 
 let configLoadError: string | undefined;
 
-const VERSION = "0.4.3";
+const VERSION = "0.4.4";
 
 // ---------------------------------------------------------------------------
 // Roster mutation (/council add | remove | chair) — persisted to council.json

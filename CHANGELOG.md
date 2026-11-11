@@ -1,13 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.4.4
 
 - **Fix**: explicitly display council informational messages in OMP, including
   command output, update notices, roster changes, and dashboard/live URL fallbacks.
-
 - **Fix**: `/council update` only offers npm versions with strictly newer SemVer
   precedence, ignoring downgrades and build-metadata-only differences.
-
 - Remove the machine-specific tracked `node_modules` symlink so fresh clones can
   install dependencies normally.
 

@@ -343,7 +343,7 @@ describe("council extension", () => {
 		["0.3.9", false],
 		["0.4.2", false],
 		["0.4.3", false],
-		["0.4.3-beta.1", false],
+		["0.4.4-beta.1", false],
 		[version, false],
 		[`${version}+build.1`, false],
 		["0.4.5-beta.1", true],
