@@ -8,6 +8,9 @@
 - **Fix**: `/council update` only offers npm versions with strictly newer SemVer
   precedence, ignoring downgrades and build-metadata-only differences.
 
+- Remove the machine-specific tracked `node_modules` symlink so fresh clones can
+  install dependencies normally.
+
 ## 0.4.3
 
 - `/council update` — checks npm for the latest version; self-updates via
